@@ -1,0 +1,417 @@
+---
+title: "Bivalves will be bivalves"
+---
+
+```{r libraries}
+library(metafor)
+library(tidyverse)
+```
+
+# Read data
+
+Data are held in the CSV file `bivalvecheckedCSV.csv`. This table contains details of the reference, analysis, and contained taxa. Columns are:
+
+* Study, Year [reference data]
+* Species, Common name, Family [taxon data]
+* Sample_size_control, Sample_size_treatment [sample data]
+* Stressor, control_level_stressor, treatment_level_stressor [stressor treatment]
+* Replicates, measurement [experimental setup]
+* control_mean, control_variance_type, control_variance [control results]
+* treatment_mean, treatment_variance_type, treatment_variance [treatment results]
+* developmental_stage
+* duration expt, acclimatisation [additional details]
+* notes
+
+```{r read_data}
+metadata_bivalves <- read_csv("bivalvecheckedCSV.csv")
+```
+
+
+# Meta-analysis
+
+First we calculate the effect sizes for each analysis using the package *metafor* [@Viechtbauer2010JSS].
+
+```{r effect_sizes}
+bivalve_effect_sizes <- escalc(
+  n1i = Sample_size_treatment,
+  n2i = Sample_size_control,
+  m1i = treatment_mean,
+  m2i = control_mean,
+  sd1i = treatment_variance,
+  sd2i = control_variance,
+  data = metadata_bivalves,
+  measure = "ROM",
+  append = TRUE
+)
+```
+
+These effect sizes feed into the meta-analysis step. This is contained within the custom function `meta_analysis` and applied equally to groups defined by stressor, family, and for the publication bias. 
+
+```{r meta_analysis}
+meta_analysis <- function (effect_size_data, moderators) {
+  # Meta-analysis using multilevel linear mixed-effects models. This simplifies the consistent arguments just for the different data input and moderators used.
+  #
+  # Arcs:
+  #   effect_size_data: results of function `scale` for a data set.
+  #   moderators: formula to include one or more moderators in the mode.
+  #
+  # Returns:
+  #  List of model parameters for the meta-analysis. 
+  rma.mv(yi, vi, method = "REML", test = "t", random = ~ 1 | Study / Species, data = effect_size_data, mods = moderators)
+}
+
+bivalve_growth <- meta_analysis(bivalve_effect_sizes, ~ Stressor - 1)
+bivalve_family <- meta_analysis(bivalve_effect_sizes, ~ Family:Stressor - 1)
+publication_bias <- meta_analysis(bivalve_effect_sizes, ~ sqrt(vi):Stressor - 1)
+```
+
+
+# Whole-group effect sizes
+
+Now we plot the whole-group effect sizes results from the meta-analysis.
+
+These functions are useful tools for modifying the labels and generate the plots shown below.
+
+```{r useful_functions}
+remove_stressor_label <- function (label) {
+  # Remove the prefix "Stressor" from the beginning of linear model labels.
+  #
+  # Args:
+  #   label: a character vector.
+  #
+  # Returns:
+  #   A modified character vector removing "Stressor" from the beginning of each item.
+  str_replace_all(label, "^Stressor", "")
+}
+
+pval_asterisk_label <- function (pval) {
+  # Replace a vector of p-values with incremental asterisks to indicate the significance level: * p < 0.05, ** p < 0.01, *** p < 0.001.
+  #
+  # Args:
+  #   pval: a vector of p-values.
+  #
+  # Returns:
+  #   A character vector with significance labels.
+  pval[pval < 0.05] <- "*"
+  pval[pval < 0.01] <- "**"
+  pval[pval < 0.001] <- "***"
+  pval[pval >= 0.05] <- ""
+  pval
+}
+
+extract_effect_size_data <- function (meta_results, counts, levels) {
+  # Extracts the effect size data from the meta-analysis results and joins this to count and level data ready to plot.
+  #
+  # Args:
+  #   meta_results: list of meta-analysis results from, e.g., `meta_analysis` function.
+  #   counts: a data.frame or tibble of experiment counts for each stressor.
+  #   levels: a named vector of stressor levels and labels.
+  #
+  # Returns:
+  #   A tibble of effect size data ready to pass to `plot_effect_sizes`.
+  tibble(
+    lnrr = meta_results$b[, 1],
+    upper = meta_results$ci.ub,
+    lower = meta_results$ci.lb,
+    stressor = factor(remove_stressor_label(dimnames(meta_results$b)[[1]])),
+    pval = meta_results$pval,
+    pval_label = pval_asterisk_label(pval)
+  ) |>
+    full_join(counts, by = c("stressor" = "Stressor")) |>
+    mutate(stressor = factor(stressor, levels = names(levels), labels = levels))
+}
+
+plot_effect_sizes <- function (effect_size_data, nudge_count_y = -0.05, nudge_sig_x = -0.1, nudge_sig_y = 0.15) {
+  # Plots the effect sizes for a range of stressors with the mean value and error bars, and labels indicating the number of included studies and significance level of the results.
+  #
+  # Args:
+  #   effect_size: a tibble or data.frame with effect size data extracted with `extract_effect_size_data`.
+  #   nudge_count_y, nudge_sig_x, nudge_sig_y: move the positions of the labels to reflect different axes ranges.
+  #
+  # Returns:
+  #   A ggplot2 object containing the plot.
+  effect_size_data |>
+    ggplot(aes(x = reorder(stressor, desc(stressor)), y = lnrr, ymin = lower, ymax = upper, colour = stressor, fill = stressor)) +
+      geom_hline(yintercept = 0, colour = "red", lwd = 1, linetype = "dashed") +
+      geom_errorbar(width = 0.4, colour = "black") +
+      geom_point(size = 2, shape = 21, colour = "black") +
+      geom_text(aes(y = upper, label = pval_label), nudge_x = nudge_sig_x, nudge_y = nudge_sig_y, colour = "black", size = 5) +
+      geom_text(aes(y = lower, label = count), nudge_y = nudge_count_y, colour = "black", size = 2) +
+      coord_flip() +
+      scale_x_discrete(labels = function(l) parse(text = l)) +
+      xlab("Stressor") +
+      ylab("Mean effect size (LnRR)") +
+      theme_minimal() +
+      theme(legend.position = "none", panel.border = element_rect(fill = NA), strip.placement = "outside")
+}
+```
+
+The stressors that we're interested are the following. This vector is useful for generating a factor that will create correct, formatted, and ordered labels for the plots below.
+
+```{r stressor_levels}
+stressor_levels <- c(O2 = expression(oxygen~(O[2])), pH = "acidity~(pH)", salinity = "salinity~(S)", temperature = "temperature~(T)", "pH + O2" = expression("O[2] + pH"), "temperature + O2" = expression(O[2] + T), "salinity + pH" = "pH + S", "pH + temperature" = "pH + T", "temperature + salinity" = "S + T", "temperature + pH + O2" = expression("O[2] + pH + T"))
+```
+
+We then use the above functions to plot the effect sizes with their error bars, including the counts of experiments.
+
+```{r plot_whole_group_effect_size}
+stressor_counts <- metadata_bivalves |> group_by(Stressor) |> summarize(count = n())
+plot_growth <- unclass(bivalve_growth)
+
+extract_effect_size_data(plot_growth, stressor_counts, stressor_levels) |>
+  plot_effect_sizes(nudge_count_y = -0.03, nudge_sig_x = -0.05, nudge_sig_y = 0.05)
+ggsave(file = "Fig3-bivalve_effect_sizes.pdf", width = 166, height = 100, units = "mm")
+```
+
+
+# Family-level effect sizes
+
+We further split the effect sizes and apply the meta-analysis by family. This repeats the method for the whole group. Each point indicates the mean effect size for that (combination of) stressor(s) on the relevant group (whole-group Bivalvia or specific families). Error bars indicate the 95% confidence intervals and each set of data are labelled with the number of experiments that contributed and the significance level: '\*' p < 0.05, '\*\*' p < 0.01, and '\*\*\*' p < 0.001.
+
+```{r by_family}
+list_of_families <- unique(bivalve_effect_sizes$Family)
+list_of_families <- list_of_families[map_lgl(list_of_families, function (fam) nrow(filter(bivalve_effect_sizes, Family == fam)) > 2)]
+names(list_of_families) <- list_of_families
+
+growth_by_family <- map(list_of_families, function(family) {
+  family_data <- bivalve_effect_sizes |>
+    filter(Family == family)
+  meta_analysis(family_data, ~ Stressor - 1)
+})
+```
+
+And we plot these data similarly too, but only for some pre-specified taxa-of-interest.
+
+```{r plot_family-effect_size}
+families_experiment_counts <- map(list_of_families, function (family) metadata_bivalves |> filter(Family == family) |> group_by(Stressor) |> summarize(count = n()))
+family_effect_sizes <- map2_dfr(growth_by_family, families_experiment_counts, function (.x, .y) {
+  extract_effect_size_data(.x, .y, levels = stressor_levels)
+}, .id = "family")
+
+plotted_families <- c(Mytilidae = "Mytilidae", Ostreidae = "Ostreidae", Pectinidae = "Pectinidae", Tellinidae = "Tellinidae", Veneridae = "Veneridae") # specify taxa-of-interest here
+
+family_effect_sizes |>
+  filter(family %in% plotted_families) |> # families of interest
+  plot_effect_sizes() +
+    facet_grid(rows = vars(family), scales = "free_y", space = "free_y", switch = "y")
+ggsave(file = "Fig5-bivalve_family_effect_sizes.pdf", width = 166, height = 220, units = "mm")
+```
+
+
+# Ontogenetic stage effect sizes
+
+A further separation is the effect size by the ontogenetic stage of the experimental Bivalvia.
+
+```{r by_developmental_stage}
+list_of_stages <- c("egg/larva" = "Egg/larva", juvenile = "juvenile", adult = "Adult")
+list_of_stages <- list_of_stages[map_lgl(list_of_stages, function (stage) nrow(filter(bivalve_effect_sizes, developmental_stage == stage)) > 1)]
+
+growth_by_stage <- map(list_of_stages, function(stage) {
+  stage_data <- bivalve_effect_sizes |>
+    filter(developmental_stage == stage)
+  meta_analysis(stage_data, ~ Stressor - 1)
+})
+
+stages_experiment_counts <- map(list_of_stages, function (stage) metadata_bivalves |> filter(developmental_stage == stage) |> group_by(Stressor) |> summarize(count = n()))
+stage_effect_sizes <- map2_dfr(growth_by_stage, stages_experiment_counts, function (.x, .y) {
+  extract_effect_size_data(.x, .y, levels = stressor_levels)
+}, .id = "stage")
+
+stage_effect_sizes |>
+  mutate(stage = factor(stage, levels = names(list_of_stages), labels = names(list_of_stages))) |>
+  plot_effect_sizes(nudge_sig_y = 0.1) +
+    facet_grid(rows = vars(stage), scales = "free_y", space = "free_y", switch = "y")
+ggsave(file = "Fig4-bivalve_stage_effect_sizes.pdf", width = 166, height = 170, units = "mm")
+```
+
+
+# Effect size changes through time
+
+We calculate the effect size changes through time for the four singular stressors to explore any trends in experimental results. This involves a meta-analysis moderated by year rather than by stressor.
+
+```{r by_stressor}
+list_of_stressors <- c(oxygen = "O2", acidity = "pH", salinity = "salinity", temperature = "temperature")
+
+growth_by_stressor <- map(list_of_stressors, function(stress) {
+  stressor_data <- bivalve_effect_sizes |>
+    filter(Stressor == stress)
+  meta_analysis(stressor_data, ~ Year)
+})
+```
+
+We replicate the `regplot` function using ggplot2 to show the trends of experiments.
+
+```{r stressor_year_functions}
+extract_stressor_trend_data <- function (stress) {
+  # Extracts the effect sizes from a list of meta-analyses.
+  #
+  # Args:
+  #   stress: a list of meta-analysis results output from function `rma.mv`.
+  #
+  # Returns:
+  #   A tibble containing the effect sizes for individual experiments and predicted linear models for the timespan these experiments encompass.
+  point_data <- tibble(
+    as.data.frame(stress$X.f),
+    lrmm = as.vector(stress$yi.f),
+    weight = as.vector(sqrt(weights(stress))),
+  )
+  pred_range <- seq(min(point_data$Year), max(point_data$Year), length.out = 100)
+  fit_data <- predict(stress, newmods = pred_range)
+  class(fit_data) <- "list"
+  fit_df <- as_tibble(fit_data[c("pred", "se", "ci.lb", "ci.ub")]) |>
+    bind_cols(pred_year = pred_range)
+  bind_rows(point_data, fit_df)
+}
+
+plot_stressor_year <- function (trend_data) {
+  # Plots the trend in effect size through time for a series of stressor output from function `extract_stressor_trend_data`.
+  #
+  # Args:
+  #   trend_data: a tibble or data.frame of effect size points and prediction data to plot.
+  #
+  # Returns:
+  #   A ggplot2 plot object of the trends through time with points indicating weights in the linear model and trend line with error bars.
+  trend_data |>
+  ggplot(aes(x = Year, y = lrmm, size = weight)) +
+    geom_ribbon(mapping = aes(x = pred_year, ymin = ci.lb, ymax = ci.ub), inherit.aes = FALSE, colour = "grey30", fill = "grey80") +
+    geom_line(mapping = aes(x = pred_year, y = pred), inherit.aes = FALSE) +
+    geom_point(shape = 21, colour = "black", fill = "grey50") +
+    ylab("Log ratio of means") +
+    facet_grid(rows  = vars(stressor)) +
+    theme_minimal() +
+    theme(legend.position = "none", panel.border = element_rect(fill = NA))
+}
+```
+
+These above functions help with the data wrangling and plotting.
+
+The trend data are taken as the effect size plotted against year of publication, with the weight that each experiment contributes to the model indicated by the size of the point. The linear model trend line and 95% confidence intervals are included behind the data.
+
+```{r plot_stressor_year}
+stressor_year <- map_dfr(growth_by_stressor, extract_stressor_trend_data, .id = "stressor")
+
+stressor_year |>
+  plot_stressor_year()
+ggsave(file = "figSX-year_stressor_trend.pdf", width = 166, height = 140, units = "mm")
+```
+
+
+# Phylogenetic framework
+
+This code plots the family-level phylogeny of Bivalvia from Crouch *et al*. (2021) with the inclusion of these taxa in experimental set-ups.
+
+```{r packages}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install("ggtree")
+}
+
+# library(tidyverse)
+library(ggtree)
+library(treeio)
+library(patchwork)
+```
+
+## Reading the tree #
+
+First we read the Newick tree file from Crouch *et al*. (2021) using package ape (Paradis & Schliep, 2019). Here we use the 'budding II' tree and time-scaling and remove the non-Bivalvia groups: Gastropoda, Cephalopoda, Scaphopoda, Chitonidae, and Monoplacophora.
+
+```{r read_tree}
+tree <- read.tree("bivalve_family_tree_budII_dates.tre")
+tree <- drop.tip(tree, c("GastropodaA", "GastropodaB", "CephalopodaA", "CephalopodaB", "Scaphopoda", "Chitonidae", "Monoplacophora"))
+plot(tree, no.margin = TRUE)
+```
+
+## Experimental set-up data #
+
+Data on the number of experimental set-ups are taken from out meta-analysis (see Materials & methods in the main text). Two hundred and five unique experiments were found for 17 families.
+
+```{r experiment_data}
+# unique_experiments <- tribble(
+#   ~family,          ~n_experiments,
+#   "Arcidae",                     6,
+#   "Arcticidae",                  5,
+#   "Donacidae",                   2,
+#   "Dreissenidae",                1,
+#   "Hiatellidae",                 2,
+#   "Laternulidae",                3,
+#   "Mactridae",                   2,
+#   "Mesodesmatidae",              1,
+#   "Myidae",                      2,
+#   "Mytilidae",                  39,
+#   "Ostreidae",                  23,
+#   "Pectinidae",                 29,
+#   "Pharidae",                    1,
+#   "Pteriidae",                   3,
+#   "Tellinidae",                  6,
+#   "Unionidae",                   7,
+#   "Veneridae",                  26
+# )
+unique_experiments <- metadata_bivalves |> group_by(family = Family) |> summarize(n_experiments = n())
+families_with_experiments <- unique_experiments$family
+```
+
+## Plotting the tree and number of experiments #
+
+Plotting uses the ggplot2 (Wickham, 2016) and ggtree packages (Yu *et al*., 2017). First plot the tree as this enables lining up the taxon labels later.
+
+```{r plot_tree}
+tree_plot <- ggtree(tree) +
+  theme_tree2() +
+  xlab("Age (Ma)")
+```
+
+We join these data with the total list of families included in the phylogeny using the tip labels in the plotted tree.
+
+```{r arrange_labels}
+family_df <- tibble(family = get_taxa_name(tree_plot), n_experiments = 0)
+n_experiments_total <- 
+  bind_rows(unique_experiments, family_df[!(family_df$family %in% unique_experiments$family), ])
+```
+
+Next a column plot of the number of experiments. All the taxa in the tree are plotted, but only some have data: the bar plot will look sparse, but this is useful to show how biased experiments are across bivalve families. We use the order of taxa in the previously plotted tree to organise the column chart labels and plot the ones with data in bold to make those families a little easier to spot. Some of this code is a bit hacky, but it works well enough (at least for now).
+
+```{r plot_experiments}
+taxa_in_tree <- get_taxa_name(tree_plot)
+boldify <- rep("plain", length(taxa_in_tree))
+boldify[which(taxa_in_tree %in% families_with_experiments)] <- "bold"
+plot_experiments <- n_experiments_total %>%
+  ggplot(aes(family, n_experiments)) +
+  geom_col() +
+  coord_flip() +
+  scale_x_discrete(limits = rev(taxa_in_tree)) +
+  theme_minimal() +
+  ylab("No. experiments") +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 5, hjust = 0.0, face = rev(boldify))
+  )
+```
+
+Finally, use the patchwork package (Pederson, 2020) to join the two plots, label them, and make sure the vertical axis is aligned correctly.
+
+```{r combine_plots}
+tree_plot + plot_experiments +
+  plot_layout(design = "AAB") +
+  plot_annotation(tag_levels = c("A"))
+```
+
+The plots are output to a PDF.
+
+```{r output_pdf}
+ggsave("Fig2-phylogeny-n_experiments.pdf", width = 180, height = 180, units = "mm")
+```
+
+## References #
+
+CROUCH, N.M.A., EDIE, S.M., COLLINS, K.S., BIELER, R. &#38; JABLONSKI, D. 2021. Calibrating phylogenies assuming bifurcation or budding alters inferred macroevolutionary dynamics in a densely sampled phylogeny of bivalve families. <i>Proceedings of the Royal Society B: Biological Sciences</i>, <b>288</b>: 20212178.
+
+PARADIS, E. & SCHLIEP, K. 2019. ape 5.0: an environment for modern phylogenetics and evolution ary analyses in R. <i>Bioinformatics</i>, <b>35</b>: 526–528.
+
+PEDERSEN, T.L. 2020. patchwork: The composer of plots.
+
+WICKHAM, H. 2016. <i>ggplot2: Elegant graphics for data analysis</i>. Springer-Verlag New York.
+
+YU, G., SMITH, D.K., ZHU, H., GUAN, Y. &#38; LAM, T.T.-Y. 2017. ggtree: an R package for visualization and annotation of phylogenetic trees with their covariates and other associated data. <i>Methods in Ecology and Evolution</i>, <b>8</b>: 28–36.
+We use the budding (II) phylogeny of 
