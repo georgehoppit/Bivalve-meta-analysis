@@ -1,0 +1,126 @@
+---
+title: "A family phylogeny of Bivalvia"
+---
+
+```{r initialize_renv_library, eval = FALSE}
+install.packages("renv")
+renv::init()
+```
+
+# Introduction #
+
+This code plots the family-level phylogeny of Bivalvia from Crouch *et al*. (2021) with the inclusion of these taxa in experimental set-ups.
+
+```{r packages}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install("ggtree")
+}
+
+library(tidyverse)
+library(ggtree)
+library(treeio)
+library(patchwork)
+```
+
+# Reading the tree #
+
+First we read the Newick tree file from Crouch *et al*. (2021) using package ape (Paradis & Schliep, 2019). Here we use the 'budding II' tree and time-scaling and remove the non-Bivalvia groups: Gastropoda, Cephalopoda, Scaphopoda, Chitonidae, and Monoplacophora.
+
+```{r read_tree}
+tree <- read.tree("bivalve_family_tree_budII_dates.tre")
+tree <- drop.tip(tree, c("GastropodaA", "GastropodaB", "CephalopodaA", "CephalopodaB", "Scaphopoda", "Chitonidae", "Monoplacophora"))
+plot(tree, no.margin = TRUE)
+```
+
+# Experimental set-up data #
+
+Data on the number of experimental set-ups are taken from out meta-analysis (see Materials & methods in the main text). Two hundred and five unique experiments were found for 17 families.
+
+```{r experiment_data}
+unique_experiments <- tribble(
+  ~family,          ~n_experiments,
+  "Arcidae",                     6,
+  "Arcticidae",                  5,
+  "Donacidae",                   2,
+  "Dreissenidae",                1,
+  "Hiatellidae",                 2,
+  "Laternulidae",                3,
+  "Mactridae",                   2,
+  "Mesodesmatidae",              1,
+  "Myidae",                      2,
+  "Mytilidae",                  39,
+  "Ostreidae",                  23,
+  "Pectinidae",                 29,
+  "Pharidae",                    1,
+  "Pteriidae",                   3,
+  "Tellinidae",                  6,
+  "Unionidae",                   7,
+  "Veneridae",                  26
+)
+families_with_experiments <- unique_experiments$family
+```
+
+# Plotting the tree and number of experiments #
+
+Plotting uses the ggplot2 (Wickham, 2016) and ggtree packages (Yu *et al*., 2017). First plot the tree as this enables lining up the taxon labels later.
+
+```{r plot_tree}
+tree_plot <- ggtree(tree) +
+  theme_tree2() +
+  xlab("Age (Ma)")
+```
+
+We join these data with the total list of families included in the phylogeny using the tip labels in the plotted tree.
+
+```{r arrange_labels}
+family_df <- tibble(family = get_taxa_name(tree_plot), n_experiments = 0)
+n_experiments_total <- 
+  bind_rows(unique_experiments, family_df[!(family_df$family %in% unique_experiments$family), ])
+```
+
+Next a column plot of the number of experiments. All the taxa in the tree are plotted, but only some have data: the bar plot will look sparse, but this is useful to show how biased experiments are across bivalve families. We use the order of taxa in the previously plotted tree to organise the column chart labels and plot the ones with data in bold to make those families a little easier to spot. Some of this code is a bit hacky, but it works well enough (at least for now).
+
+```{r plot_experiments}
+taxa_in_tree <- get_taxa_name(tree_plot)
+boldify <- rep("plain", length(taxa))
+boldify[which(taxa %in% families_with_experiments)] <- "bold"
+plot_experiments <- n_experiments_total %>%
+  ggplot(aes(family, n_experiments)) +
+  geom_col() +
+  coord_flip() +
+  scale_x_discrete(limits = rev(taxa_in_tree)) +
+  theme_minimal() +
+  ylab("No. experiments") +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 5, hjust = 0.0, face = rev(boldify))
+  )
+```
+
+Finally, use the patchwork package (Pederson, 2020) to join the two plots, label them, and make sure the vertical axis is aligned correctly.
+
+```{r combine_plots}
+tree_plot + plot_experiments +
+  plot_layout(design = "AAB") +
+  plot_annotation(tag_levels = c("A"))
+```
+
+The plots are output to a PDF.
+
+```{r output_pdf}
+ggsave("fig2-phylogeny-n_experiments.pdf", width = 180, height = 180, units = "mm")
+```
+
+# References #
+
+CROUCH, N.M.A., EDIE, S.M., COLLINS, K.S., BIELER, R. &#38; JABLONSKI, D. 2021. Calibrating phylogenies assuming bifurcation or budding alters inferred macroevolutionary dynamics in a densely sampled phylogeny of bivalve families. <i>Proceedings of the Royal Society B: Biological Sciences</i>, <b>288</b>: 20212178.
+
+PARADIS, E. & SCHLIEP, K. 2019. ape 5.0: an environment for modern phylogenetics and evolution ary analyses in R. <i>Bioinformatics</i>, <b>35</b>: 526–528.
+
+PEDERSEN, T.L. 2020. patchwork: The composer of plots.
+
+WICKHAM, H. 2016. <i>ggplot2: Elegant graphics for data analysis</i>. Springer-Verlag New York.
+
+YU, G., SMITH, D.K., ZHU, H., GUAN, Y. &#38; LAM, T.T.-Y. 2017. ggtree: an R package for visualization and annotation of phylogenetic trees with their covariates and other associated data. <i>Methods in Ecology and Evolution</i>, <b>8</b>: 28–36.
